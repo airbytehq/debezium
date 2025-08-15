@@ -231,6 +231,7 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
                     tablesSlot.set(getChangeTablesToQuery(partition, offsetContext, toLsn));
                     collectChangeTablesWithKnownStopLsn(partition, tablesSlot.get());
                 }
+                AtomicBoolean anyData = new AtomicBoolean(false);
                 try {
                     dataConnection.getChangesForTables(databaseName, tablesSlot.get(), fromLsn, toLsn, resultSets -> {
 
@@ -238,6 +239,7 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
                         final int tableCount = resultSets.length;
                         final SqlServerChangeTablePointer[] changeTables = new SqlServerChangeTablePointer[tableCount];
                         final SqlServerChangeTable[] tables = tablesSlot.get();
+                        boolean seenData = false;
 
                         for (int i = 0; i < tableCount; i++) {
                             changeTables[i] = new SqlServerChangeTablePointer(tables[i], resultSets[i]);
@@ -249,6 +251,10 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
                             for (SqlServerChangeTablePointer changeTable : changeTables) {
                                 if (changeTable.isCompleted()) {
                                     continue;
+                                }
+                                if (!seenData) {
+                                    seenData = true;
+                                    anyData.set(true);
                                 }
                                 if (tableWithSmallestLsn == null || changeTable.compareTo(tableWithSmallestLsn) < 0) {
                                     tableWithSmallestLsn = changeTable;
@@ -351,6 +357,11 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
                 }
                 catch (SQLException e) {
                     tablesSlot.set(processErrorFromChangeTableQuery(databaseName, e, tablesSlot.get()));
+                }
+                if (!anyData.get()) {
+                    streamingExecutionContext.setLastProcessedPosition(TxLogPosition.valueOf(toLsn));
+                    offsetContext.setChangePosition(TxLogPosition.valueOf(toLsn), 0);
+                    dispatcher.dispatchHeartbeatEvent(partition, offsetContext);
                 }
             }
         }
