@@ -235,6 +235,7 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
                 }
 
                 SqlServerChangeTablePointer[] changeTables = new SqlServerChangeTablePointer[]{};
+                AtomicBoolean anyData = new AtomicBoolean(false);
                 try {
                     long eventSerialNoInInitialTx = 1;
                     final SqlServerChangeTable[] tables = tablesSlot.get();
@@ -245,11 +246,16 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
                         changeTables[i].next();
                     }
 
+                    boolean seenData = false;
                     for (;;) {
                         SqlServerChangeTablePointer tableWithSmallestLsn = null;
                         for (SqlServerChangeTablePointer changeTable : changeTables) {
                             if (changeTable.isCompleted()) {
                                 continue;
+                            }
+                            if (!seenData) {
+                                seenData = true;
+                                anyData.set(true);
                             }
                             if (tableWithSmallestLsn == null || changeTable.compareTo(tableWithSmallestLsn) < 0) {
                                 tableWithSmallestLsn = changeTable;
@@ -354,6 +360,11 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
                 }
                 finally {
                     Arrays.stream(changeTables).filter(Objects::nonNull).forEach(ChangeTableResultSet::close);
+                    if (!anyData.get()) {
+                        streamingExecutionContext.setLastProcessedPosition(TxLogPosition.valueOf(toLsn));
+                        offsetContext.setChangePosition(TxLogPosition.valueOf(toLsn), 0);
+                        dispatcher.dispatchHeartbeatEvent(partition, offsetContext);
+                    }
                 }
             }
         }
